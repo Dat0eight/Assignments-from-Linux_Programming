@@ -8,18 +8,19 @@
 #include <string.h>
 
 #define handle_error(msg) do {perror( msg ); exit( EXIT_FAILURE );} while (0)
-
 #define MQ_NAME "/student_mq"
 #define MAX_MSG_SIZE 8192 
 
 typedef struct {
+    char fullName[50];
+    int age;
+    char homeLand[100];
+    char phoneNumber[20];
+} info_struct;
+
+typedef struct {
     long int priority;
-    struct {
-        char fullName[50];
-        int age;
-        char homeLand[100];
-        char phoneNumber[20];
-    } info;
+    info_struct info; 
 } inforStudent;
 
 /*Display Menu function*/
@@ -34,7 +35,7 @@ void menuFunc(){
 }
 
 /*Getting information function*/
-void getInfo(inforStudent *buff, mqd_t fileDescriptor){
+void getInfo( inforStudent *buff, mqd_t fileDescriptor ){ 
     
     printf("Student ID:");
     scanf("%li", &(buff->priority));
@@ -56,46 +57,41 @@ void getInfo(inforStudent *buff, mqd_t fileDescriptor){
     fgets(buff->info.phoneNumber, sizeof(buff->info.phoneNumber), stdin);
     buff->info.phoneNumber[strcspn(buff->info.phoneNumber, "\n")] = '\0';
 
-    //check data from keyboard that stored yet
+    //check data from keyboard that stored in buff yet
     printf("Data stored include: ID:%li - name: %s - age: %d - home land: %s - phone: %s\n",
     buff->priority, buff->info.fullName, buff->info.age, buff->info.homeLand, buff->info.phoneNumber);
 
     /*POSIX message queue: send data*/
-
-    // if (mq_getattr(fileDescriptor, &messageAttr) == -1){         >>>Just check Max size message
-    //     handle_error("mq_getattr()");
-    // }
-
-    // printf("Max message size: %ld\n", messageAttr.mq_msgsize);
-
-    if( mq_send(fileDescriptor, (const char*)buff, sizeof(buff) , (unsigned int)buff->priority ) == -1){ 
+    if( mq_send( fileDescriptor, (const char *)buff, sizeof(inforStudent) , 0 ) == -1){ // đã sai ở chỗ sizeof(buff) 
         handle_error("mp_send()");
-    }
-    /*Ở đây mình đang muốn set msg_prio là priority của struct inforStudent
-    Do vậy khi mình sử dụng mq_receive() ở Chức năng hiển thị thông tin sinh viên thông qua ID, 
-    đối số msg_prio sẽ là con trỏ trỏ tới giá trị priority 
-    Mình hiểu priority như type message, các process có thể dựa vào nó để lấy ra tin nhắn phù hợp*/
+    } else printf("Send message into the queue successfully.\n");
 }
 
 int main()
 {
-    char option;
     mqd_t fileDescriptor;
-    inforStudent person, IDperson;
-    inforStudent  *buff, *ID_buff;
-    
-    menuFunc();
-    
-    fileDescriptor = mq_open( MQ_NAME, O_CREAT | O_RDWR | O_APPEND, 0666 , 0);
+    inforStudent person, getInfoVar; //, IDperson
+    inforStudent  *buff, *getInfoBuff; //, *ID_buff
+    char option;
+    struct mq_attr messageAttr;
+    int checkAvailable = 0;
+    unsigned int ID_buff;
+
+    fileDescriptor = mq_open( MQ_NAME, O_CREAT | O_RDWR | O_NONBLOCK , 0666 , 0);
     if ( fileDescriptor == -1 ){
         handle_error("mq_open()");
-    }
+    }  
     
+    if (mq_getattr(fileDescriptor, &messageAttr) == -1){  // in order to get attributes of mq       
+    handle_error("mq_getattr()");
+    }
+
+    menuFunc();
+
     while(1)
     {
-        printf("Your option: \n");
-        scanf("%c", &option);
-
+        printf("Your option:\n");
+        scanf(" %c", &option);
         switch (option)
         {
             case '1': //Getting information and send data into message queue
@@ -107,37 +103,106 @@ int main()
                 break;
 
             case '2': //Get a student information through ID
-                ID_buff = &IDperson;
+                getInfoBuff = &getInfoVar;
 
                 printf("Get a student information through ID.\n");
                 printf("Input ID student who you want to get information:");
-                scanf("%u",(unsigned int *)&ID_buff->priority);
+                scanf("%u", &ID_buff);
                 
-                if ( mq_receive(fileDescriptor, (char*)buff, 10000 , (unsigned int *)&ID_buff->priority ) == -1 ){ // /  - 0 sizeof(buff) 
-                    handle_error("mq_receive()");
+                for (int i = 0; i < messageAttr.mq_curmsgs ; i++) { //nhận message về kiểm tra: nếu oke thì in ra  và send lên lại. Nếu k ok thì cũng send lên lại được
+                    if ( mq_receive(fileDescriptor, (char*)getInfoBuff, MAX_MSG_SIZE , 0 ) == -1 ){ /*  - 0 sizeof(buff) -  (unsigned int *)&ID_buff->priority */
+                        handle_error("mq_receive()");
+                    }  
+                    
+                    if ( getInfoBuff->priority == ID_buff ){
+                        printf("ID:%li - name: %s - age: %d - home land: %s - phone: %s\n",
+                        getInfoBuff->priority, getInfoBuff->info.fullName, getInfoBuff->info.age, getInfoBuff->info.homeLand, getInfoBuff->info.phoneNumber);
+                        
+                        checkAvailable = 1;
+                        
+                        if( mq_send(fileDescriptor, (const char *)getInfoBuff, sizeof(inforStudent) , 0 ) == -1){ //
+                            handle_error("mp_send()");
+                        } 
+                        break;
+                    } 
+                    if( mq_send(fileDescriptor, (const char *)getInfoBuff, sizeof(inforStudent) , 0 ) == -1){ //
+                    handle_error("mp_send()");
+                    }
                 }
-                
-                printf("ID:%li - name: %s - age: %d - home land: %s - phone: %s\n",
-                buff->priority, buff->info.fullName, buff->info.age, buff->info.homeLand, buff->info.phoneNumber);
+
+                if (checkAvailable == 0) {printf ("There is not a student with this ID\n");};
+                checkAvailable = 0;
                 break;
 
             case '3':
-                printf("option3");
-                break;
+                printf("Show the student list\n");
+
+                //Check the number of messages currently held in the queue
+                if (messageAttr.mq_curmsgs == 0){
+                    printf("The queue is empty!. Choosing Option 1 to input student information.\n");
+                    break;
+
+                } else {
+                    for (int i = 0; i < messageAttr.mq_curmsgs ; i++){ //if the queue is not empty, show student list
+                        if ( mq_receive(fileDescriptor, (char*)getInfoBuff, MAX_MSG_SIZE , 0) == -1 ){ 
+                            handle_error("mq_receive()");
+                        }
+                        
+                        printf("ID:%li - name: %s - age: %d - home land: %s - phone: %s\n",
+                        getInfoBuff->priority, getInfoBuff->info.fullName, getInfoBuff->info.age, getInfoBuff->info.homeLand, getInfoBuff->info.phoneNumber);
+                        
+                        if( mq_send(fileDescriptor, (const char *)getInfoBuff, sizeof(inforStudent) , 0 ) == -1){ //
+                            handle_error("mp_send()");
+                        }
+                    }
+                    break;
+                }
 
             case '4':
-                printf("option4");
+                getInfoBuff = &getInfoVar;
+
+                printf("Delete a student information through ID.\n");
+                printf("Input ID student who you want to delete information:");
+                scanf("%u", &ID_buff);
+                
+                for (int i = 0; i < messageAttr.mq_curmsgs ; i++) { //nhận message về kiểm tra: nếu oke thì in ra  và send lên lại. Nếu k ok thì cũng send lên lại được
+                    if ( mq_receive(fileDescriptor, (char*)getInfoBuff, MAX_MSG_SIZE , 0 ) == -1 ){ /*  - 0 sizeof(buff) -  (unsigned int *)&ID_buff->priority */
+                        handle_error("mq_receive()");
+                    }  
+                    
+                    if ( getInfoBuff->priority == ID_buff ){
+                        printf("The information ID:%li - name: %s - age: %d - home land: %s - phone: %s was deleted!\n",
+                        getInfoBuff->priority, getInfoBuff->info.fullName, getInfoBuff->info.age, getInfoBuff->info.homeLand, getInfoBuff->info.phoneNumber);
+        
+                        checkAvailable = 1;
+                        messageAttr.mq_curmsgs = messageAttr.mq_curmsgs - 1;
+                        break;
+                        } 
+             
+                    if( mq_send(fileDescriptor, (const char *)getInfoBuff, sizeof(inforStudent) , 0 ) == -1){ //
+                    handle_error("mp_send()");
+                    }
+                }
+
+                if (checkAvailable == 0) {printf ("There is not a student with this ID\n");};
+                checkAvailable = 0;
                 break;
-            
+            case '5': //just check the number of message in queue only
+                printf("Number of messages currently in queue: %ld\n", messageAttr.mq_curmsgs);
+                break;
+
             case 'x':
+                mq_close(fileDescriptor);
+                if (mq_unlink(MQ_NAME) == -1){
+                    handle_error("mq_unlink()");
+                }
                 exit(EXIT_SUCCESS);
 
             default: 
-                printf("Not matched!. Try another options.");
+                printf("Not matched!. Try another options.\n");
                 break;
 
         }
     }
     return 0;
-
 }
